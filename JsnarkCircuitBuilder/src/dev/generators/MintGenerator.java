@@ -3,9 +3,9 @@ package dev.generators;
 import circuit.eval.CircuitEvaluator;
 import circuit.structure.CircuitGenerator;
 import circuit.structure.Wire;
-import examples.gadgets.hash.SHA256Gadget;
+import circuit.structure.WireArray;
+import circuit.config.Config;
 import util.Util;
-
 import java.util.Random;
 import java.io.File;
 import java.io.FileNotFoundException;
@@ -13,16 +13,16 @@ import java.util.Scanner;
 import java.math.BigInteger;
 
 import dev.gadgets.ExportCoinGadget;
-
+import dev.gadgets.SubsetSumHashGadget;
 
 public class MintGenerator extends CircuitGenerator {
 
 	private Wire[] addr_pk;
-	private Wire v;
-	private Wire[] rho, r, k, s, cm;
+	private Wire value;
+	private Wire rho, r, k, s, cm;
 	private Wire apk;
-	private Wire[] c;
-	private SHA256Gadget sha2Gadget;
+	private Wire[] coin;
+	private SubsetSumHashGadget subsetSumGadget;
 	private ExportCoinGadget ecGadget;
 
 	public MintGenerator(String circuitName) {
@@ -32,51 +32,46 @@ public class MintGenerator extends CircuitGenerator {
 	@Override
 	protected void buildCircuit() {
 
-		Random random = new Random();
-		int bitwidth = 32;
-
+		// Input Wire Define
 		addr_pk = createInputWireArray(2, "addr_pk");
-		v = createInputWire("v");
-
-		BigInteger rho_ = new BigInteger(256, random);
-		BigInteger r_ = new BigInteger(256, random);
-		BigInteger s_ = new BigInteger(256, random);
-		rho = createConstantWireArray(Util.split(rho_, 8, 32), "rho");
-		r = createConstantWireArray(Util.split(r_, 8, 32), "r");
-		s = createConstantWireArray(Util.split(s_, 8, 32), "s");
+		value = createInputWire("value");
+		rho = createInputWire("rho");
+		r = createInputWire("r");
+		s = createInputWire("s");
 		
-		apk = addr_pk[0];
+		apk = addr_pk[0]; // parse
 		
-		Wire[] mergedWires = new Wire[17];
-		System.arraycopy(rho, 0, mergedWires, 0, 8);
-		System.arraycopy(r, 0, mergedWires, 8, 8);
-		mergedWires[16] = apk;
-		
-		sha2Gadget = new SHA256Gadget(mergedWires, bitwidth, 68, false, true);
-		k = sha2Gadget.getOutputWires();
+		k = getHash(rho, r, apk);
+		cm = getHash(s, k, value);
 
-		mergedWires = new Wire[17];
-		System.arraycopy(s, 0, mergedWires, 0, 8);
-		System.arraycopy(k, 0, mergedWires, 8, 8);
-		mergedWires[16] = v;
-		sha2Gadget = new SHA256Gadget(mergedWires, bitwidth, 68, false, true);
-		cm = sha2Gadget.getOutputWires();
+		coin = new Wire[7]; // coin define
+		coin[0] = addr_pk[0]; coin[1] = addr_pk[1]; coin[2] = value;
+		coin[3] = rho; coin[4] = r;  coin[5] = s; coin[6] = cm;
 
-		c = new Wire[35];
-		c[0] = addr_pk[0]; c[1] = addr_pk[1]; c[2] = v;
-		System.arraycopy(rho, 0, c, 3, 8);
-		System.arraycopy(r, 0, c, 11, 8);
-		System.arraycopy(s, 0, c, 19, 8);
-		System.arraycopy(cm, 0, c, 27, 8);
+		makeOutputArray(coin, "coin"); // make output
 
-		makeOutputArray(c, "coin");
+		ExportCoinGadget ecGadget = new ExportCoinGadget(coin); //save coin as file
+		makeOutputArray(ecGadget.getOutputWires(), "coin saved if one");
+	}
 
-		ExportCoinGadget ecGadget = new ExportCoinGadget(c);
-		makeOutputArray(ecGadget.getOutputWires(), "1 if coin saved");
+	private Wire getHash(Wire... args) { // variable args length
+		int argLen = args.length;
+		Wire[] inHash = new Wire[argLen];
+		for (int i=0; i<argLen; i++) {
+			inHash[i] = args[i];
+		}
+
+		Wire[] nextInputBits = new WireArray(inHash).getBits(Config.LOG2_FIELD_PRIME).asArray(); // bitify array
+		SubsetSumHashGadget subsetSumGadget = new SubsetSumHashGadget(nextInputBits, false); // get hash
+		return subsetSumGadget.getOutputWires()[0];
 	}
 
 	@Override
-	public void generateSampleInput(CircuitEvaluator circuitEvaluator) {
+	public void generateSampleInput(CircuitEvaluator circuitEvaluator) { // read file input
+		
+		circuitEvaluator.setWireValue(rho, nextRandomBigInteger(Config.FIELD_PRIME)); 
+		circuitEvaluator.setWireValue(r, nextRandomBigInteger(Config.FIELD_PRIME));
+		circuitEvaluator.setWireValue(s, nextRandomBigInteger(Config.FIELD_PRIME));
 		try{
             File file = new File("mintInput.txt");
 			Scanner scan = new Scanner(file);
@@ -85,7 +80,7 @@ public class MintGenerator extends CircuitGenerator {
 			String v_str = scan.nextLine();
 			circuitEvaluator.setWireValue(addr_pk[0], Integer.parseInt(apk_str));
 			circuitEvaluator.setWireValue(addr_pk[1], Integer.parseInt(pk_enc));
-			circuitEvaluator.setWireValue(v, Integer.parseInt(v_str));
+			circuitEvaluator.setWireValue(value, Integer.parseInt(v_str));
 			
         }catch (FileNotFoundException e) {
 			System.err.println("'/mintInput.txt' must be exist");
@@ -93,9 +88,17 @@ public class MintGenerator extends CircuitGenerator {
         }
 	}
 
-	public static void main(String[] args) throws Exception {
+	private static BigInteger nextRandomBigInteger(BigInteger n) { // for randomized variable
+		Random rand = new Random();  // system time seed
+		BigInteger result = new BigInteger(n.bitLength(), rand);
+		while (result.compareTo(n) >= 0) { // to prevent overflow
+			result = new BigInteger(n.bitLength(), rand);
+		}
+		return result;
+	}
 
-		MintGenerator generator = new MintGenerator("MINT");
+	public static void main(String[] args) throws Exception {
+		MintGenerator generator = new MintGenerator("Mint Generator");
 		generator.generateCircuit();
 		generator.evalCircuit();
 		generator.prepFiles();

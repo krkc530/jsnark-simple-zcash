@@ -4,7 +4,6 @@ import circuit.eval.CircuitEvaluator;
 import circuit.eval.Instruction;
 import circuit.operations.Gadget;
 import circuit.structure.Wire;
-import circuit.auxiliary.LongElement;
 import java.io.File;
 import java.io.FileNotFoundException;
 import java.math.BigInteger;
@@ -26,7 +25,7 @@ public class ExportCoinGadget extends Gadget {
 		output = generator.createProverWitnessWire("saving coin... : 1 if done");
 		generator.specifyProverWitnessComputation(new Instruction() {
 			@Override
-			public void evaluate(CircuitEvaluator evaluator) {
+			public void evaluate(CircuitEvaluator evaluator) {  // make file output
 				evaluator.setWireValue(output, 0);
 				try {
 					File dir = new File("./coins/");
@@ -42,7 +41,7 @@ public class ExportCoinGadget extends Gadget {
 					PrintWriter writer = new PrintWriter("./coins/C" + idx);
 					for (int i=0; i<coin.length; i++) {
 						BigInteger tmp = evaluator.getWireValue(coin[i]);
-						writer.println(Long.toString(tmp.longValue()));
+						writer.println(tmp.toString());
 					}
 					writer.close();
 					evaluator.setWireValue(output, 1);

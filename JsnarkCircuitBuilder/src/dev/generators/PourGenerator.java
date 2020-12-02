@@ -3,9 +3,9 @@ package dev.generators;
 import circuit.eval.CircuitEvaluator;
 import circuit.structure.CircuitGenerator;
 import circuit.structure.Wire;
-import examples.gadgets.hash.SHA256Gadget;
+import circuit.structure.WireArray;
 import util.Util;
-
+import circuit.config.Config;
 import java.util.Random;
 import java.io.File;
 import java.io.FileNotFoundException;
@@ -13,6 +13,8 @@ import java.util.Scanner;
 import java.math.BigInteger;
 
 import dev.gadgets.ExportCoinGadget;
+import dev.gadgets.SubsetSumHashGadget;
+import dev.gadgets.MerkleTreePathAlterGadget;
 
 
 public class PourGenerator extends CircuitGenerator {
@@ -20,11 +22,14 @@ public class PourGenerator extends CircuitGenerator {
 	private Wire[] addrOld_pk, addrOld_sk, addrNew_pk; //address info
 	private Wire apk, askOld; //key info from addr info
 	private Wire old_v, new_v; //coin value
-	private Wire[] rho_old, r_old, s_old, cm_old, sn, coin_old, k_old; //old info
-	private Wire[] cm_old_re; // compare to cm_old 
-	private Wire[] rho, r, k, s, cm, coin; //new info
-	private SHA256Gadget sha2Gadget;
+	private Wire rho_old, r_old, s_old, cm_old, sn, k_old; //old info
+	private Wire[] coin_old, coin;
+	private Wire cm_old_calc; // compare to cm_old 
+	private Wire rho, r, k, s, cm; //new info
+	private Wire root, path;
+	
 	private ExportCoinGadget ecGadget;
+	private MerkleTreePathAlterGadget merkleTreeGadget;
 
 
 	public PourGenerator(String circuitName) {
@@ -32,85 +37,52 @@ public class PourGenerator extends CircuitGenerator {
 	}
 
 	@Override
-	protected void buildCircuit() {
-
-		Random random = new Random();
-		int bitwidth = 32;
-		
+	protected void buildCircuit() {		
 		addrOld_sk = createInputWireArray(2);
 		addrNew_pk = createInputWireArray(2);
 		new_v = createInputWire();
+		coin_old = createInputWireArray(7);
 
-		coin_old = createInputWireArray(35);
-		addrOld_pk = createInputWireArray(2);
-		old_v = createInputWire();
-		rho_old = createInputWireArray(8);
-		r_old = createInputWireArray(8);
-		s_old = createInputWireArray(8);
-		cm_old = createInputWireArray(8);
+		addrOld_pk = new Wire[2];
+		addrOld_pk[0] = coin_old[0]; addrOld_pk[1] = coin_old[1];
+		old_v = coin_old[2];
+		rho_old = coin_old[3];
+		r_old = coin_old[4];
+		s_old = coin_old[5];
+		cm_old = coin_old[6];
 		
 		//coin_old consistency check -> cm_old == H(s_old, H(rho, r), v)?
-		Wire[] mergedWires = new Wire[17];
-		System.arraycopy(rho_old, 0, mergedWires, 0, 8);
-		System.arraycopy(r_old, 0, mergedWires, 8, 8);
-		mergedWires[16] = addrOld_pk[0]; //apk_old
-		
-		sha2Gadget = new SHA256Gadget(mergedWires, bitwidth, 68, false, true);
-		k_old = sha2Gadget.getOutputWires();
+		k_old = getHash(rho_old, r_old, addrOld_pk[0]);
+		cm_old_calc = getHash(s_old, k_old, old_v);
+		addEqualityAssertion(cm_old, cm_old_calc, "check cm");
 
-		mergedWires = new Wire[17];
-		System.arraycopy(s_old, 0, mergedWires, 0, 8);
-		System.arraycopy(k_old, 0, mergedWires, 8, 8);
-		mergedWires[16] = old_v;
-		sha2Gadget = new SHA256Gadget(mergedWires, bitwidth, 68, false, true);
-		cm_old_re = sha2Gadget.getOutputWires();
-
-		for (int i=0; i<8; i++) 
-			addEqualityAssertion(cm_old[i], cm_old_re[i], "check cm");
-
-		//balance check
+		//balance check -> old_v == new_v?
 		addEqualityAssertion(new_v, old_v, "check balance");
+
+		//path check
+		root = createInputWire();
+		path = createInputWire();
+		merkleTreeGadget = new MerkleTreePathAlterGadget(path, cm_old);
+		Wire actualRoot = merkleTreeGadget.getOutputWires()[0];
+		addEqualityAssertion(actualRoot, root, "check path");
 
 
 		askOld = addrOld_sk[0];
 
-		mergedWires = new Wire[9];
-		System.arraycopy(rho_old, 0, mergedWires, 0, 8);
-		mergedWires[8] = askOld;
-
-		sha2Gadget = new SHA256Gadget(mergedWires, bitwidth, 4 * 9, false, true);
-		sn = sha2Gadget.getOutputWires(); //compute sn_old
+		sn = getHash(rho_old, askOld);
 
 		apk = addrNew_pk[0];
 
-		BigInteger rho_ = new BigInteger(256, random);
-		BigInteger r_ = new BigInteger(256, random);
-		BigInteger s_ = new BigInteger(256, random);
-		rho = createConstantWireArray(Util.split(rho_, 8, 32));
-		r = createConstantWireArray(Util.split(r_, 8, 32));
-		s = createConstantWireArray(Util.split(s_, 8, 32));
+		rho = createInputWire();
+		r = createInputWire();
+		s = createInputWire();
 
-		mergedWires = new Wire[17];
-		System.arraycopy(rho, 0, mergedWires, 0, 8);
-		System.arraycopy(r, 0, mergedWires, 8, 8);
-		mergedWires[16] = apk;
-		
-		sha2Gadget = new SHA256Gadget(mergedWires, bitwidth, 68, false, true);
-		k = sha2Gadget.getOutputWires();
+		k = getHash(rho, r, apk);
+		cm = getHash(s, k, new_v);
 
-		mergedWires = new Wire[17];
-		System.arraycopy(s, 0, mergedWires, 0, 8);
-		System.arraycopy(k, 0, mergedWires, 8, 8);
-		mergedWires[16] = new_v;
-		sha2Gadget = new SHA256Gadget(mergedWires, bitwidth, 68, false, true);
-		cm = sha2Gadget.getOutputWires();
-
-		coin = new Wire[35];
+		coin = new Wire[7];
 		coin[0] = addrNew_pk[0]; coin[1] = addrNew_pk[1]; coin[2] = new_v;
-		System.arraycopy(rho, 0, coin, 3, 8);
-		System.arraycopy(r, 0, coin, 11, 8);
-		System.arraycopy(s, 0, coin, 19, 8);
-		System.arraycopy(cm, 0, coin, 27, 8);
+		coin[3] = rho; coin[4] = r;  coin[5] = s; coin[6] = cm;
 
 		makeOutputArray(coin, "new coin");
 		ExportCoinGadget ecGadget = new ExportCoinGadget(coin);
@@ -118,40 +90,55 @@ public class PourGenerator extends CircuitGenerator {
 
 	}
 
+	private static BigInteger nextRandomBigInteger(BigInteger n) { // for randomized variable
+		Random rand = new Random();  // system time seed
+		BigInteger result = new BigInteger(n.bitLength(), rand);
+		while (result.compareTo(n) >= 0) { // to prevent overflow
+			result = new BigInteger(n.bitLength(), rand);
+		}
+		return result;
+	}
+
+	private Wire getHash(Wire... args) { // variable args length
+		int argLen = args.length;
+		Wire[] inHash = new Wire[argLen];
+		for (int i=0; i<argLen; i++) {
+			inHash[i] = args[i];
+		}
+
+		Wire[] nextInputBits = new WireArray(inHash).getBits(Config.LOG2_FIELD_PRIME).asArray(); // bitify array
+		SubsetSumHashGadget subsetSumGadget = new SubsetSumHashGadget(nextInputBits, false); // get hash
+		return subsetSumGadget.getOutputWires()[0];
+	}
+
 	@Override
-	public void generateSampleInput(CircuitEvaluator circuitEvaluator) {
+	public void generateSampleInput(CircuitEvaluator circuitEvaluator) { // read file input
+		circuitEvaluator.setWireValue(rho, nextRandomBigInteger(Config.FIELD_PRIME));
+		circuitEvaluator.setWireValue(r, nextRandomBigInteger(Config.FIELD_PRIME));
+		circuitEvaluator.setWireValue(s, nextRandomBigInteger(Config.FIELD_PRIME));
 		try{
-			File file = new File("pourInput.txt");
+			File inputfile = new File("pourInput.txt");
 			Scanner scan;
-			BigInteger num;
-
-			scan = new Scanner(file); //parse address and new coin value
+			
+			scan = new Scanner(inputfile); // parse address and new coin value
 			String coinFileName = scan.nextLine();
-			File coinFile = new File("./coins/" + coinFileName);
-
-			String str = scan.nextLine();
-			circuitEvaluator.setWireValue(addrOld_sk[0], Integer.parseInt(str));
-			str = scan.nextLine();
-			circuitEvaluator.setWireValue(addrOld_sk[1], Integer.parseInt(str));
-			str = scan.nextLine();
-			circuitEvaluator.setWireValue(addrNew_pk[0], Integer.parseInt(str));
-			str = scan.nextLine();
-			circuitEvaluator.setWireValue(addrNew_pk[1], Integer.parseInt(str));
-			str = scan.nextLine();
-			circuitEvaluator.setWireValue(new_v, Integer.parseInt(str));
+			String str;
+			str = scan.nextLine(); circuitEvaluator.setWireValue(addrOld_sk[0], Integer.parseInt(str));
+			str = scan.nextLine(); circuitEvaluator.setWireValue(addrOld_sk[1], Integer.parseInt(str));
+			str = scan.nextLine(); circuitEvaluator.setWireValue(addrNew_pk[0], Integer.parseInt(str));
+			str = scan.nextLine(); circuitEvaluator.setWireValue(addrNew_pk[1], Integer.parseInt(str));
+			str = scan.nextLine(); circuitEvaluator.setWireValue(new_v, Integer.parseInt(str));
+			str = scan.nextLine(); circuitEvaluator.setWireValue(root, new BigInteger(str));
+			str = scan.nextLine(); circuitEvaluator.setWireValue(path, Integer.parseInt(str));
 			scan.close();
 			
-			scan = new Scanner(coinFile); //parse coin
-			for (int i=0; i<35; i++) {
+			File coinFile = new File("./coins/" + coinFileName);
+			BigInteger num;
+			scan = new Scanner(coinFile); // parse old coin
+			for (int i=0; i<7; i++) {
 				str = scan.nextLine();
 				num = new BigInteger(str);
 				circuitEvaluator.setWireValue(coin_old[i], num);
-				if (i==0 || i==1) circuitEvaluator.setWireValue(addrOld_pk[i], num);
-				else if (i == 2) circuitEvaluator.setWireValue(old_v, num);
-				else if (3 <= i && i < 11) circuitEvaluator.setWireValue(rho_old[i-3], num);
-				else if (11 <= i && i < 19) circuitEvaluator.setWireValue(r_old[i-11], num);
-				else if (19 <= i && i < 27) circuitEvaluator.setWireValue(s_old[i-19], num);
-				else if (27 <= i) circuitEvaluator.setWireValue(cm_old[i-27], num);
 			}
 			scan.close();
         }catch (FileNotFoundException e) {
